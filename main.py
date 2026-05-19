@@ -1,74 +1,70 @@
 import os
 import io
-from fastapi import FastAPI, UploadFile, File, Form
+from fastapi import FastAPI, UploadFile, File, Form, HTTPException
+from fastapi.staticfiles import StaticFiles
+from fastapi.responses import FileResponse
 from fastapi.middleware.cors import CORSMiddleware
 from pypdf import PdfReader
 from google import genai
 from dotenv import load_dotenv
 
+# 1. Setup and Security
 load_dotenv()
-
 app = FastAPI()
 
+# Allow your frontend to talk to your backend
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["*"], 
-    allow_credentials=True,
+    allow_origins=["*"],
     allow_methods=["*"],
     allow_headers=["*"],
 )
 
-
+# 2. Configure AI
 client = genai.Client(api_key=os.getenv("GEMINI_API_KEY"))
+MODEL_ID = os.getenv("AI_MODEL_NAME", "gemini-3.1-flash-lite")
+
+# 3. Serve Frontend Files
+# This tells FastAPI to serve all files inside your 'frontend' folder
+if os.path.exists("frontend"):
+    app.mount("/frontend", StaticFiles(directory="frontend"), name="frontend")
 
 @app.get("/")
-def home():
-    return {"message": "Premium AI CV Matcher is Online."}
+async def read_index():
+    # This sends your index.html whenever someone visits your main URL
+    return FileResponse('frontend/index.html')
 
+# 4. The AI Analysis Logic
 @app.post("/analyze")
-async def analyze_cv(
-    cv_file: UploadFile = File(...), 
-    job_description: str = Form(...)
-):
+async def analyze_cv(file: UploadFile = File(...), job_description: str = Form(...)):
     try:
-        pdf_content = await cv_file.read()
+        # Read the PDF content
+        pdf_content = await file.read()
         pdf_reader = PdfReader(io.BytesIO(pdf_content))
         cv_text = ""
         for page in pdf_reader.pages:
-            text = page.extract_text()
-            if text:
-                cv_text += text + "\n"
-        
+            cv_text += page.extract_text()
+
+        # Build the prompt for Gemini
         prompt = f"""
-        You are an expert recruitment consultant and ATS specialist in the United Kingdom. 
-        Analyze the candidate's CV against the provided Job Description.
+        You are an expert UK recruiter. Compare the following CV text with the Job Description.
+        Provide a Match Percentage (0-100%) and a brief summary of missing skills or improvements.
         
-        [CANDIDATE CV]
-        {cv_text}
-        
-        [JOB DESCRIPTION]
-        {job_description}
-        
-        STRICT FORMATTING RULES:
-        1. Start the very first line with "Match Percentage: XX%" (e.g., Match Percentage: 85%).
-        2. Use '###' before every new section heading.
-        3. You MUST include these three specific sections:
-           ### ATS Keyword Gaps
-           ### UK Market Strategy
-           ### Recommended Profile Edits
-        4. Be blunt, professional, and provide actionable advice for the UK tech market.
+        Job Description: {job_description}
+        CV Content: {cv_text}
         """
-        
+
+        # Get response from AI
         response = client.models.generate_content(
-            model='gemini-3.1-flash-lite', 
-            contents=prompt,
+            model=MODEL_ID,
+            contents=prompt
         )
-        
-        return {
-            "status": "success",
-            "analysis": response.text
-        }
-        
+
+        return {"analysis": response.text}
+
     except Exception as e:
-        print(f"Server Error: {e}") 
-        return {"status": "error", "message": str(e)}
+        raise HTTPException(status_code=500, detail=str(e))
+
+if __name__ == "__main__":
+    import uvicorn
+    uvicorn.run(app, host="0.0.0.0", port=int(os.getenv("PORT", 8000)))
