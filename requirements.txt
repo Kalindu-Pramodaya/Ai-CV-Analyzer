@@ -7,3 +7,4 @@ pypdf
 google-genai
 
 python-dotenv
+python-multipart
